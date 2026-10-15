@@ -41,7 +41,6 @@ _lock = threading.Lock()
 _stats: dict[str, dict[str, Any]] = {}
 _cur: list[Any] | None = None  # [mode, lanes, depth, t_last, {phase: seconds}, t_begin]
 _last_end: dict[str, float] = {}
-_last_dump = 0.0
 _driver_calls = 0
 
 
@@ -124,7 +123,7 @@ def note_driver_call() -> None:
 
 
 def end(tokens: int = 0) -> None:
-    global _cur, _last_dump
+    global _cur
     if not ENABLED or _cur is None:
         return
     mode, lanes, depth, _t_last, phases, t_begin = _cur
@@ -159,12 +158,40 @@ def end(tokens: int = 0) -> None:
                 slot = random.randrange(ph["n"])
                 if slot < _RESERVOIR:
                     samples[slot] = value
-        if now - _last_dump >= 1.0:
-            _last_dump = now
-            tmp = OUT + ".tmp"
-            with open(tmp, "w") as handle:
-                json.dump({"written_at": time.time(), "stats": _stats}, handle)
-            os.replace(tmp, OUT)
+        global _dirty
+        _dirty = True
+    _ensure_dumper()
+
+
+_dirty = False
+_dumper: threading.Thread | None = None
+
+
+def _dump_locked() -> None:
+    tmp = OUT + ".tmp"
+    with open(tmp, "w") as handle:
+        json.dump({"written_at": time.time(), "stats": _stats}, handle)
+    os.replace(tmp, OUT)
+
+
+def _dump_loop() -> None:
+    global _dirty
+    while True:
+        time.sleep(1.0)
+        with _lock:
+            if _dirty:
+                _dirty = False
+                try:
+                    _dump_locked()
+                except OSError:
+                    pass
+
+
+def _ensure_dumper() -> None:
+    global _dumper
+    if _dumper is None:
+        _dumper = threading.Thread(target=_dump_loop, name="mtp-phase-timing-dump", daemon=True)
+        _dumper.start()
 
 
 def install_plain_step_hook() -> bool:
