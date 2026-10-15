@@ -33,6 +33,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from . import phase_timing
 from .continuous_engine import (
     BatchedSelfMTPState,
     ContinuousSelfMTPError,
@@ -374,6 +375,7 @@ class ContinuousMTPGenerationBatch:
         if pending:
             return self._deliver_initial(pending)
 
+        phase_timing.begin("cohort", len(self.lane_uids))
         proposal = propose_batched_self_mtp(self._batch)
         planned: list[tuple[int, tuple[MTPToken, ...], str | None]] = []
         emitted_counts: list[int] = []
@@ -385,6 +387,7 @@ class ContinuousMTPGenerationBatch:
             emitted_counts.append(len(delivered))
             terminal.append(finish_reason is not None)
 
+        phase_timing.mark("plan_delivery")
         commit_batched_self_mtp(
             self._batch,
             proposal,
@@ -405,6 +408,8 @@ class ContinuousMTPGenerationBatch:
                 )
             )
         detached = self._resolve_terminals(terminal)
+        phase_timing.mark("emit_and_detach")
+        phase_timing.end(tokens=sum(emitted_counts))
         return ContinuousMTPGenerationBurst(
             emissions=tuple(emissions),
             emitted_counts=tuple(emitted_counts),

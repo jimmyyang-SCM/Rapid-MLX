@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from threading import Lock
 from typing import Any, Protocol
 
+from . import phase_timing
 from .continuous_engine import (
     ContinuousSelfMTPUnsupportedError as ContinuousSelfMTPUnsupported,
 )
@@ -546,6 +547,8 @@ class RapidMLXSelfMTPBackend:
         # Near-terminal companions spend at most one cycle at the smaller K.
         shared_depth = min(lane_depths)
         depths = tuple(shared_depth for _lane in lanes)
+        phase_timing.set_depth(shared_depth)
+        phase_timing.mark("boundary_capture")
         if max(depths) == 0:
             verify_ids = self.ops.uint32([[lane.cur] for lane in lanes])
             target_logits, target_hidden = self._forward_pair(
@@ -795,6 +798,7 @@ class RapidMLXSelfMTPBackend:
         batch = len(lanes)
         hidden_batch, token_batch, first_lengths = self._draft_inputs(lanes)
         positions = [valid - 1 for valid in first_lengths]
+        phase_timing.mark("draft_inputs", hidden_batch, token_batch)
         _prepare_group(draft_cache, first_lengths)
         try:
             if forwards.split_draft:
@@ -816,6 +820,7 @@ class RapidMLXSelfMTPBackend:
             _finalize_group(draft_cache)
         first_draft = self.ops.argmax_rows(self.ops.logprobs(selected_logits))
         draft_columns = [first_draft]
+        phase_timing.mark("draft1_fwd_argmax", first_draft, selected_hidden)
         if depth > 1:
             _prepare_group(draft_cache, [1] * batch)
             try:
@@ -828,12 +833,14 @@ class RapidMLXSelfMTPBackend:
             draft_columns.append(
                 self.ops.argmax_rows(self.ops.logprobs(second_logits[:, -1:]))
             )
+            phase_timing.mark("draft2_fwd_argmax", draft_columns[-1])
         for lane in lanes:
             lane.pending_hidden = None
             lane.pending_tokens = []
 
         current = self.ops.uint32([[lane.cur] for lane in lanes])
         verify_ids = self.ops.concatenate([current, *draft_columns], axis=1)
+        phase_timing.mark("verify_inputs", verify_ids)
         _prepare_group(target, [depth + 1] * batch)
         try:
             target_logits, target_hidden = self._forward_pair(
@@ -842,12 +849,14 @@ class RapidMLXSelfMTPBackend:
             )
         finally:
             _finalize_group(target)
+        phase_timing.mark("target_verify_fwd", target_logits, target_hidden)
         target_logprobs = self.ops.logprobs(target_logits)
         target_ids = self.ops.argmax_rows(target_logprobs)
         host = self.ops.to_host(
             self.ops.concatenate([*draft_columns, target_ids], axis=1),
             materialize=(target_logprobs,),
         )
+        phase_timing.mark("logits_argmax_materialize")
 
         accepted: list[int] = []
         bonuses: list[int] = []
@@ -878,6 +887,7 @@ class RapidMLXSelfMTPBackend:
             )
             hidden_rows.append(target_hidden[row : row + 1, : depth + 1])
 
+        phase_timing.mark("host_accept")
         accepted_tuple = tuple(accepted)
         return CycleComputation(
             lane_uids=tuple(lane.uid for lane in lanes),
@@ -1099,10 +1109,15 @@ class RapidRaggedCacheAdapter:
             )
         if any(draft_drops):
             self._preflight(draft, draft_drops, verify_size=verify_width, validate=True)
+        phase_timing.mark("rollback_preflight")
         if any(target_drops):
             self._trim(target, target_drops, verify_size=verify_width, validate=False)
+        if phase_timing.ENABLED:
+            phase_timing.mark("target_rollback", phase_timing.cache_arrays(target))
         if any(draft_drops):
             self._trim(draft, draft_drops, verify_size=verify_width, validate=False)
+        if phase_timing.ENABLED:
+            phase_timing.mark("draft_rollback", phase_timing.cache_arrays(draft))
 
     def detach(
         self,

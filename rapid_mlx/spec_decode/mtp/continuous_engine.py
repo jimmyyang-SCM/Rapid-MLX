@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from rapid_mlx.spec_decode.mtp.accept_counter import get_global_counter
+from rapid_mlx.spec_decode.mtp import phase_timing
 
 
 class ContinuousSelfMTPError(RuntimeError):
@@ -621,6 +622,7 @@ def propose_batched_self_mtp(batch: BatchedSelfMTPState) -> SelfMTPCycleResult:
         counter.record_round(depth, accepted)
         if lane.accept_counter is not None:
             lane.accept_counter.record_round(depth, accepted)
+    phase_timing.mark("validate_and_count")
     proposal = SelfMTPCycleResult(
         membership_epoch=batch.membership_epoch,
         lane_uids=computation.lane_uids,
@@ -675,6 +677,7 @@ def commit_batched_self_mtp(
             accepted - count + 1 if is_terminal and count <= accepted else 0
         )
 
+    phase_timing.mark("commit_validate")
     try:
         # Keep proposal cache state provisional until the exact delivered
         # prefix is known. Rejected drafts and tokens hidden by a terminal
@@ -697,6 +700,11 @@ def commit_batched_self_mtp(
             emitted_counts=emitted,
             terminal=terminal_flags,
         )
+        if phase_timing.ENABLED:
+            phase_timing.mark(
+                "transaction_commit",
+                [(lane.pending_hidden, lane.seed_hidden, lane.token_prefix) for lane in batch.lanes],
+            )
     except BaseException as error:  # noqa: BLE001 - transaction includes cancellation
         _abort_backend_transaction(batch, proposal._computation, error)
         batch.proposal_open = False

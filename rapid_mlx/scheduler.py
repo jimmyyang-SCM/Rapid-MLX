@@ -4207,6 +4207,9 @@ class Scheduler:
         # step would put dict access on the decode hot path advertised
         # as zero-cost when off.
         self._step_timing_enabled = bool(os.environ.get("RAPID_STEP_TIMING"))
+        from .spec_decode.mtp import phase_timing as _mtp_phase_timing
+
+        _mtp_phase_timing.install_plain_step_hook()
         # prev_running = 0 means the first activation is an idle->active edge,
         # so the first decode step arms the barrier (materializes any
         # prefill-inherited recurrent graph) — see the class-level comment.

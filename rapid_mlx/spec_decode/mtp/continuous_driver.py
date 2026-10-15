@@ -26,6 +26,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from . import phase_timing
 from .continuous_batch import (
     ContinuousMTPDetachPackage,
     ContinuousMTPGenerationBatch,
@@ -250,6 +251,7 @@ class ContinuousMTPDriver:
         joins and the next transactional burst.  A terminal reason is attached
         only to the final delivered token for that lane.
         """
+        phase_timing.note_driver_call()
         if not self.has_pending_responses:
             if self.closed:
                 self._last_attached_uids = ()
